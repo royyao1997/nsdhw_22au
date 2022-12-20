@@ -1,315 +1,226 @@
-#include <iostream>
-#include <sstream>
-#include <iomanip>
-#include <vector>
-#include <stdexcept>
-#include <functional>
-#include <pybind11/pybind11.h>
+#include <mkl.h>
 #include <pybind11/numpy.h>
-#include <pybind11/stl.h>
-#include "mkl.h"
+#include <pybind11/operators.h>
+#include <pybind11/pybind11.h>
+
+#include <iostream>
+#include <string>
+#include <sstream>
+#include <cstring>
+
 class Matrix {
 
 public:
-
-    Matrix(size_t nrow, size_t ncol)
-      : m_nrow(nrow), m_ncol(ncol)
+    size_t nrow;
+    size_t ncol;
+    // double * m_buffer;
+    Matrix(size_t n_row, size_t n_col)
     {
-        reset_buffer(nrow, ncol);
+        nrow = n_row;
+        ncol = n_col;
+        size_t nelement = nrow * ncol;
+        m_buffer = new double[nelement];
+        memset(m_buffer, 0, nrow * ncol * sizeof(double));
     }
 
-    Matrix(size_t nrow, size_t ncol, std::vector<double> const & vec)
-      : m_nrow(nrow), m_ncol(ncol)
+    // ~Matrix()
+    // {
+    //     delete[] m_buffer;
+    // }
+
+    // No bound check.
+    double   operator() (size_t row, size_t col) const
     {
-        reset_buffer(nrow, ncol);
-        (*this) = vec;
+        return m_buffer[row* ncol + col];
+    }
+    double & operator() (size_t row, size_t col)
+    {
+        return m_buffer[row* ncol + col];
     }
 
-    Matrix & operator=(std::vector<double> const & vec)
-    {
-        if (size() != vec.size())
-        {
-            throw std::out_of_range("number of elements mismatch");
+	void load_from_python(pybind11::array_t<double> input) {
+		pybind11::buffer_info buf = input.request();
+		memcpy(m_buffer, buf.ptr, nrow * ncol * sizeof(double));
+	}
+	void load_buffer(double* input) {
+		memcpy(m_buffer, input, nrow * ncol * sizeof(double));
+	}
+
+    friend bool operator == (const Matrix& A, const Matrix& B){
+        if ((A.nrow!=B.nrow) || (A.ncol!=B.ncol)) return false;
+        for (size_t i=0;i<A.nrow*A.ncol;i++){
+            if (A.m_buffer[i] != B.m_buffer[i]) return false;
         }
-
-        size_t k = 0;
-        for (size_t i=0; i<m_nrow; ++i)
-        {
-            for (size_t j=0; j<m_ncol; ++j)
-            {
-                (*this)(i,j) = vec[k];
-                ++k;
-            }
-        }
-
-        return *this;
+        return true;
     }
 
-    Matrix(Matrix const & other)
-      : m_nrow(other.m_nrow), m_ncol(other.m_ncol)
-    {
-        reset_buffer(other.m_nrow, other.m_ncol);
-        for (size_t i=0; i<m_nrow; ++i)
-        {
-            for (size_t j=0; j<m_ncol; ++j)
-            {
-                (*this)(i,j) = other(i,j);
-            }
-        }
+    double* get_data() const {
+        return m_buffer;
+    }
+    
+	std::string tostring() const {
+		std::stringstream ss;
+		ss << "[";
+		for (size_t row = 0; row < nrow; row++) {
+			if (row > 0) {
+				ss << " ";
+			}
+
+			ss << "[";
+			for (size_t col = 0; col < ncol; col++) {
+				ss << (*this)(row, col) << " ";
+			}
+			ss << "]";
+			if (row < nrow - 1) {
+				ss << std::endl;
+			}
+		}
+		ss << "]";
+        ss << std::endl;
+		return ss.str();
+	}
+
+    // size_t nrow() const {return nrow;}
+    // size_t ncol() const {return ncol;}
+
+    pybind11::array_t<double> array(){
+        return pybind11::array_t<double>(
+            {nrow, ncol},
+            {sizeof(double) * ncol, sizeof(double)},
+            m_buffer,
+            pybind11::cast(this)
+        );
     }
 
-    Matrix & operator=(Matrix const & other)
-    {
-        if (this == &other) { return *this; }
-        if (m_nrow != other.m_nrow || m_ncol != other.m_ncol)
-        {
-            reset_buffer(other.m_nrow, other.m_ncol);
-        }
-        for (size_t i=0; i<m_nrow; ++i)
-        {
-            for (size_t j=0; j<m_ncol; ++j)
-            {
-                (*this)(i,j) = other(i,j);
-            }
-        }
-        return *this;
-    }
-
-    Matrix(Matrix && other)
-      : m_nrow(other.m_nrow), m_ncol(other.m_ncol)
-    {
-        reset_buffer(0, 0);
-        std::swap(m_nrow, other.m_nrow);
-        std::swap(m_ncol, other.m_ncol);
-        std::swap(m_buffer, other.m_buffer);
-    }
-
-    Matrix & operator=(Matrix && other)
-    {
-        if (this == &other) { return *this; }
-        reset_buffer(0, 0);
-        std::swap(m_nrow, other.m_nrow);
-        std::swap(m_ncol, other.m_ncol);
-        std::swap(m_buffer, other.m_buffer);
-        return *this;
-    }
-
-    ~Matrix()
-    {
-        reset_buffer(0, 0);
-    }
-
-    bool operator==(const Matrix &other);
-    double   operator() (size_t row, size_t col) const { return m_buffer[index(row, col)]; }
-    double & operator() (size_t row, size_t col)       { return m_buffer[index(row, col)]; }
-
-    double   operator[] (size_t idx) const { return m_buffer[idx]; }
-    double & operator[] (size_t idx)       { return m_buffer[idx]; }
-
-    size_t nrow() const { return m_nrow; }
-    size_t ncol() const { return m_ncol; }
-
-    size_t size() const { return m_nrow * m_ncol; }
-    double buffer(size_t i) const { return m_buffer[i]; }
-    std::vector<double> buffer_vector() const { return std::vector<double>(m_buffer, m_buffer+size()); }
-
-    Matrix transpose() const;
-
-public:
-	pybind11::array_t<double> array() {
-	return pybind11::array_t<double>(
-			std::vector<size_t>{nrow(), ncol()},
-			std::vector<size_t>{sizeof(double)*ncol(), sizeof(double)}, 
-			m_buffer, 
-			pybind11::cast(this) 
-			);
-    }
-    size_t index(size_t row, size_t col) const
-    {
-        return row * m_ncol + col;
-    }
-
-    void reset_buffer(size_t nrow, size_t ncol)
-    {
-        if (m_buffer) { delete[] m_buffer; }
-        const size_t nelement = nrow * ncol;
-        if (nelement) { m_buffer = new double[nelement](); }
-        else          { m_buffer = nullptr; }
-        m_nrow = nrow;
-        m_ncol = ncol;
-    }
-
-    size_t m_nrow = 0;
-    size_t m_ncol = 0;
-    double * m_buffer = nullptr;
+private:
+    double * m_buffer;
 
 };
 
-
-bool operator== (Matrix const & mat1, Matrix const & mat2)
-{
-    if ((mat1.ncol() != mat2.ncol()) && (mat1.nrow() != mat2.ncol()))
-    {
-        return false;
+Matrix multiply_naive(Matrix& matrix_a, Matrix& matrix_b){
+    if (matrix_a.ncol != matrix_b.nrow){
+        throw pybind11::value_error("The shape of the two given matrices are not matched.");
     }
-
-    for (size_t i=0; i<mat1.nrow(); ++i)
-    {
-        for (size_t j=0; j<mat1.ncol(); ++j)
-        {
-            if (mat1(i, j) != mat2(i, j))
-            {
-                return false;
+    
+    Matrix result(matrix_a.nrow, matrix_b.ncol);
+    for (size_t row = 0; row < matrix_a.nrow; row++){
+        for (size_t col = 0; col < matrix_b.ncol; col++){
+            for (size_t i = 0; i < matrix_a.ncol; i++){
+                result(row,col) += matrix_a(row,i) * matrix_b(i,col);
             }
         }
     }
-
-    return true;
+    return result;
 }
 
-bool Matrix::operator==(const Matrix &other) {
-    if (m_nrow != other.m_nrow || m_ncol != other.m_ncol) 
-        return false;
-    
-    for (size_t i = 0; i < m_nrow; ++i) 
-        for (size_t j = 0; j < m_ncol; ++j) 
-            if ((*this)(i, j) != other(i, j)) 
-                return false;
-    return true;
-}
-/*
- * Throw an exception if the shapes of the two matrices don't support
- * multiplication.
- */
-void validate_multiplication(Matrix const & mat1, Matrix const & mat2)
-{
-    if (mat1.ncol() != mat2.nrow())
-    {
-        throw std::out_of_range(
-            "the number of first matrix column "
-            "differs from that of second matrix row");
-    }
-}
-
-
-/*
- * Use MKL for the matrix matrix multiplication.
- */
-Matrix multiply_mkl(Matrix const & mat1, Matrix const & mat2)
-{
-    validate_multiplication(mat1,mat2);
-    Matrix ret(mat1.nrow(), mat2.ncol());
-
-
-    cblas_dgemm(
-        CblasRowMajor /* const CBLAS_LAYOUT Layout */
-      , CblasNoTrans /* const CBLAS_TRANSPOSE transa */
-      , CblasNoTrans /* const CBLAS_TRANSPOSE transb */
-      , mat1.nrow() /* const MKL_INT m */
-      , mat2.ncol() /* const MKL_INT n */
-      , mat1.ncol() /* const MKL_INT k */
-      , 1.0 /* const double alpha */
-      , mat1.m_buffer /* const double *a */
-      , mat1.ncol() /* const MKL_INT lda */
-      , mat2.m_buffer /* const double *b */
-      , mat2.ncol() /* const MKL_INT ldb */
-      , 0.0 /* const double beta */
-      , ret.m_buffer /* double * c */
-      , ret.ncol() /* const MKL_INT ldc */
-    );
-
-
-    return ret;
-}
-
-Matrix Matrix::transpose() const
-{
-    Matrix ret(nrow(), ncol());
-
-    for (size_t i=0; i<ret.nrow(); ++i)
-    {
-        for (size_t j=0; j<ret.ncol(); ++j)
-        {
-            ret(j, i) = (*this)(i, j);
-        }
+Matrix multiply_tile(Matrix& matrix_a, Matrix& matrix_b, size_t tsize){
+    if (matrix_a.ncol != matrix_b.nrow){
+        throw pybind11::value_error("The shape of the two given matrices are not matched.");
     }
 
-    return ret;
-}
+    Matrix result(matrix_a.nrow, matrix_b.ncol);
+    for (size_t tile_row_start=0; tile_row_start<matrix_a.nrow; tile_row_start+=tsize){
+        // size_t tile_row_end = (tile_row_start+tsize>matrix_a.nrow)?matrix_a.nrow:tile_row_start+tsize;
+        size_t tile_row_end = tile_row_start+tsize;
+        tile_row_end = (tile_row_end>matrix_a.nrow)?matrix_a.nrow:tile_row_end;
 
-/*
- * Indirect naive matrix matrix multiplication.
- */
-Matrix multiply_naive(Matrix const & mat1, Matrix const & mat2)
-{
-    validate_multiplication(mat1, mat2);
-    Matrix ret(mat1.nrow(), mat2.ncol());
+        for (size_t tile_col_start=0; tile_col_start<matrix_b.ncol; tile_col_start+=tsize){
+            // size_t tile_col_end = (tile_col_start+tsize>matrix_b.ncol)?matrix_b.ncol:tile_col_start+tsize;
+            size_t tile_col_end = tile_col_start+tsize;
+            tile_col_end = (tile_col_end>matrix_b.ncol)?matrix_b.ncol:tile_col_end;
+            
+            // for (size_t i=tile_row_start; i<tile_row_end;i++){
+            //     for (size_t j=tile_col_start; j<tile_col_end;j++){
+            //         for (size_t k=0; k<matrix_a.ncol; k++){
+            //             result(i,j) += matrix_a(i,k)*matrix_b(k,j);
+            //         }
+            //     }
+            // }
 
-
-    for (size_t i=0; i<mat1.nrow(); ++i)
-    {
-        for (size_t k=0; k<mat2.ncol(); ++k)
-        {
-            double v = 0;
-            for (size_t j=0; j<mat1.ncol(); ++j)
-            {
-                v += mat1(i,j) * mat2(j,k);
-            }
-            ret(i,k) = v;
-        }
-    }
-
-    return ret;
-}
-
-
-
-Matrix multiply_tile(Matrix const & mat1, Matrix const & mat2, size_t tsize){
-
-    validate_multiplication(mat1, mat2);
-    Matrix ret(mat1.nrow(), mat2.ncol());
-    Matrix mat2_t = std::move(mat2.transpose());
-    
-    const size_t nrow1 = mat1.nrow();
-    const size_t nrow2 = mat2_t.nrow();
-    const size_t ncol  = mat1.ncol();    
-
-    for(size_t i=0;i<nrow1;i+=tsize){//mat1 jump to lower tile
-        for(size_t j=0;j<nrow2;j+=tsize){//mat2 jump to lower tile
-            for(size_t k=0;k<ncol;k+=tsize){//jump to right tile for both
-                for(size_t t_i=0;t_i<tsize && i+t_i<nrow1;++t_i){//mat1 move down in tile
-                    const size_t t1_row = t_i+i;
-                    for(size_t t_j=0;t_j<tsize && j+t_j<nrow2;++t_j){//mat2 move down in tile
-                        const size_t t2_row = t_j+j;
-                        double partial_sum = 0;
-                        for(size_t t_k=0;t_k<tsize && k+t_k<ncol;++t_k){//move right in both tile
-                            partial_sum+= mat1(t1_row,t_k+k)*mat2_t(t2_row,t_k+k);                    
-                       }
-                       ret(t1_row,t2_row)+=partial_sum; 
+            for (size_t t=0; t<matrix_a.ncol; t++){
+                for (size_t i=tile_row_start; i<tile_row_end;i++){
+                    for (size_t j=tile_col_start; j<tile_col_end;j++){
+                        result(i,j) += matrix_a(i,t)*matrix_b(t,j);
                     }
                 }
             }
         }
     }
-    return ret;
+    return result;
 }
 
-PYBIND11_MODULE(_matrix,m){
-    m.def("multiply_naive",&multiply_naive);
-    m.def("multiply_tile",&multiply_tile);
-    m.def("multiply_mkl",&multiply_mkl);
+Matrix multiply_mkl(Matrix& matrix_a, Matrix& matrix_b) {
+	if (matrix_a.ncol != matrix_b.nrow) {
+		throw pybind11::value_error("The shape of the two given matrices are not matched.");
+	}
+
+	double* C = new double[matrix_a.nrow * matrix_b.ncol];
+
+	int m = matrix_a.nrow;
+	int k = matrix_a.ncol;
+	int n = matrix_b.ncol;
+	double alpha = 1.0, beta = 0.0;
+
+	cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+				m, n, k, alpha, matrix_a.get_data(), k, matrix_b.get_data(), n, beta, C, n);
+
+	Matrix res(matrix_a.nrow, matrix_b.ncol);
+    res.load_buffer(C);
+
+	delete[] C;
+
+	return res;
+}
+
+PYBIND11_MODULE(_matrix, m){
+    m.doc() = "_matrix";
+
     pybind11::class_<Matrix>(m,"Matrix")
-        .def(pybind11::init<const size_t, const size_t>())
-        .def(pybind11::init<const size_t, const size_t, std::vector<double> const & >())
-        .def("__eq__", &Matrix::operator==)
-        .def("__getitem__",[](const Matrix & m,std::array<int,2>index){return m(index[0],index[1]);})
-        .def("__setitem__",[](Matrix & m, std::array<int,2>index,double value){m(index[0],index[1])=value;})
-        .def_property("array",&Matrix::array,nullptr)
-        .def_property_readonly("nrow",&Matrix::nrow)
-        .def_property_readonly("ncol",&Matrix::nrow);
-        
+        .def(pybind11::init<size_t, size_t>())
+        .def("__getitem__", [](Matrix& mat, std::pair<size_t,size_t> index){
+            return mat(index.first, index.second);
+        })
+        .def("__setitem__", [](Matrix& mat, std::pair<size_t,size_t> index, double value){
+            mat(index.first,index.second) = value;
+        })
+        .def("__str__", [](Matrix& mat){
+            return mat.tostring();
+        })
+        .def("load", &Matrix::load_from_python)
+        .def(pybind11::self == pybind11::self)
+        .def_readonly("nrow",&Matrix::nrow)
+        .def_readonly("ncol",&Matrix::ncol)
+        // .def_property("nrow",&Matrix::nrow,nullptr)
+        // .def_property("ncol",&Matrix::ncol,nullptr)
+        .def_property("array",&Matrix::array,nullptr);
+    
+	m.def("multiply_naive", &multiply_naive);
+	m.def("multiply_tile", &multiply_tile);
+	m.def("multiply_mkl", &multiply_mkl);
 }
 
+// int main(){
+//     Matrix A = Matrix(2,3);
+//     A(0,0)=1.0;
+//     A(0,1)=2.0;
+//     A(0,2)=3.0;
+//     A(1,0)=4.0;
+//     A(1,1)=5.0;
+//     A(1,2)=6.0;
 
-// vim: set ff=unix fenc=utf8 et sw=4 ts=4 sts=4:
+//     Matrix B = Matrix(3,2);
+//     B(0,0)=7.0;
+//     B(0,1)=8.0;
+//     B(1,0)=9.0;
+//     B(1,1)=10.0;
+//     B(2,0)=11.0;
+//     B(2,1)=12.0;
 
+//     Matrix C = multiply_naive(A,B);
+//     Matrix D = multiply_tile(A,B,1);
+//     Matrix E = multiply_mkl(A,B);
+//     std::cout << C.tostring();
+//     std::cout << D.tostring();
+//     std::cout << E.tostring();
+//     return 0;
+// }
