@@ -9,7 +9,3 @@ test: $(MATRIX)
 
 clean:
 	rm -rf __pycache__ *.so
-Footer
-© 2022 GitHub, Inc.
-Footer navigation
-Terms
